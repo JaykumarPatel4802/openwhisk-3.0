@@ -270,9 +270,12 @@ class LachesisScheduler(
 
     // Lachesis - we change the hash to hash based on CPU cores and memory allocation of a particular invocation from a function, not just the function
     val hash = LachesisScheduler.generateHash(msg.user.namespace.name, action.fullyQualifiedName(false))
-    val homeInvoker = hash % invokersToUse.size
-    val stepSize = stepSizes(hash % stepSizes.size)
-    logging.warn(this, s"Home index is ${homeInvoker}")
+    // val homeInvoker = hash % invokersToUse.size
+    val homeInvoker = hash
+    // val stepSize = stepSizes(hash % stepSizes.size)
+    val stepSize = 1
+    logging.info(this, s"Home invoker is ${homeInvoker}")
+    logging.info(this, s"Step size is ${stepSize}")
 
     val (chosen, finalFqn: FullyQualifiedEntityName, memSlots: Int, cpuCores: Int) = if (invokersToUse.nonEmpty) {
       val (invoker: Option[(InvokerInstanceId, Boolean)], function: FullyQualifiedEntityName, slots: Int, cores: Int) = LachesisScheduler.schedule(
@@ -437,8 +440,22 @@ object LachesisScheduler extends LoadBalancerProvider {
   def requiredProperties: Map[String, String] = kafkaHosts
 
   /** Generates a hash based on the string representation of namespace and action */
-  def generateHash(namespace: EntityName, action: FullyQualifiedEntityName): Int = {
-    (namespace.asString.hashCode() ^ action.asString.hashCode()).abs
+  def generateHash(namespace: EntityName, action: FullyQualifiedEntityName)(implicit logging: Logging): Int = {
+    logging.info(this, s"namespace is: ${namespace}")
+    logging.info(this, s"action is is: ${action}")
+    val frequency = action.name.toString.split("_")(3).toInt
+    
+    val chosen_invoker = frequency match {
+      case 1000000 => 0
+      case 1200000 => 1
+      case 1400000 => 2
+      case 1600000 => 3
+      case 1800000 => 4
+      case 2000000 => 5
+      case 2200000 => 6
+      case 2400000 => 7
+    }
+    chosen_invoker
   }
 
   /** Euclidean algorithm to determine the greatest-common-divisor */
@@ -515,6 +532,13 @@ object LachesisScheduler extends LoadBalancerProvider {
     finalRule: Int = -1)(implicit logging: Logging, transId: TransactionId): (Option[(InvokerInstanceId, Boolean)], FullyQualifiedEntityName, Int, Int) = {
     val numInvokers = invokers.size
 
+    logging.error(this, s"Num invokers is: ${numInvokers}")
+    logging.error(this, s"Index, step is: ${index}, ${step}")
+    logging.error(this, s"Steps done is: ${stepsDone}")
+    logging.error(this, s"maxConcurrent is: ${maxConcurrent}")
+
+    logging.info(this, s"fqn is: ${fqn}")
+
     if (numInvokers > 0) {
       if (stepsDone == numInvokers || finalRule == 1) {
         // Found an Invoker that fit into one of the three rules
@@ -557,6 +581,7 @@ object LachesisScheduler extends LoadBalancerProvider {
         if (!invokerMap.isEmpty) {
           // Search for best container on the Invoker
           for ((mapFqn, count) <- invokerMap) {
+            // count = number of warm containers that are available
             if (currentRule !=1) {
               val mapFqnName: String = mapFqn.name.toString.split("_")(0)
               val mapFqnCores: Int = mapFqn.name.toString.split("_")(1).toInt
