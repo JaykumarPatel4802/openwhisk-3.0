@@ -353,12 +353,23 @@ class LachesisScheduler(
           this,
           s"scheduled activation ${finalMsg.activationId}, action '${finalMsg.action.asString}' ($actionType), ns '${finalMsg.user.namespace.name.asString}', mem limit ${memoryLimit.megabytes} MB (${memoryLimitInfo}), cpu limit ${cpuLimit.cores} cores (${cpuLimitInfo}), time limit ${timeLimit.duration.toMillis} ms (${timeLimitInfo}) to ${invoker}")        
 
+        // // Spin up and initialize a warm, right-size container in the background for the action beacuse we scheduled the invocation to a larger warm container
+        // if (prewarmFlag == 1) {
+        //   if (finalAction.limits.cpu.cores > action.limits.cpu.cores || finalAction.limits.memory.megabytes > action.limits.memory.megabytes) {        
+        //     schedulingState.addOrDecreaseContainerState(invoker.toInt, action.fullyQualifiedName(true))
+        //     val backgroundActivationResult = setupActivation(backgroundMsg, action, invoker, action.limits.cpu.cores)
+        //     sendActivationToInvoker(messageProducer, backgroundMsg, invoker).map(_ => backgroundActivationResult)
+        //   }
+        // }
+
         // Spin up and initialize a warm, right-size container in the background for the action beacuse we scheduled the invocation to a larger warm container
         if (prewarmFlag == 1) {
-          if (finalAction.limits.cpu.cores > action.limits.cpu.cores || finalAction.limits.memory.megabytes > action.limits.memory.megabytes) {        
-            schedulingState.addOrDecreaseContainerState(invoker.toInt, action.fullyQualifiedName(true))
-            val backgroundActivationResult = setupActivation(backgroundMsg, action, invoker, action.limits.cpu.cores)
-            sendActivationToInvoker(messageProducer, backgroundMsg, invoker).map(_ => backgroundActivationResult)
+          if (finalAction.limits.cpu.cores > action.limits.cpu.cores || finalAction.limits.memory.megabytes > action.limits.memory.megabytes || invoker.toInt != homeInvoker) {        
+            logging.info(this, s"Warm starting container on home invoker: ${homeInvoker} but target invoker is: ${invoker.toInt}")
+            val homeInvokerInstanceId = targetInvokers(homeInvoker).id
+            schedulingState.addOrDecreaseContainerState(homeInvokerInstanceId.toInt, action.fullyQualifiedName(true))
+            val backgroundActivationResult = setupActivation(backgroundMsg, action, homeInvokerInstanceId, action.limits.cpu.cores)
+            sendActivationToInvoker(messageProducer, backgroundMsg, homeInvokerInstanceId).map(_ => backgroundActivationResult)
           }
         }
 
