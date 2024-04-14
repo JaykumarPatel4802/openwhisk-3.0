@@ -277,11 +277,15 @@ class LachesisScheduler(
     logging.info(this, s"Home invoker is ${homeInvoker}")
     logging.info(this, s"Step size is ${stepSize}")
 
-    val (chosen, finalFqn: FullyQualifiedEntityName, memSlots: Int, cpuCores: Int) = if (invokersToUse.nonEmpty) {
-      val (invoker: Option[(InvokerInstanceId, Boolean)], function: FullyQualifiedEntityName, slots: Int, cores: Int) = LachesisScheduler.schedule(
+    // Jay: keep only the target invokers
+    val numTargetInvokers = 8
+    val targetInvokers = invokersToUse.take(numTargetInvokers)
+
+    val (chosen, finalFqn: FullyQualifiedEntityName, memSlots: Int, cpuCores: Int, prewarmFlag: Int) = if (targetInvokers.nonEmpty) {
+      val (invoker: Option[(InvokerInstanceId, Boolean)], function: FullyQualifiedEntityName, slots: Int, cores: Int, flag: Int) = LachesisScheduler.schedule(
         action.limits.concurrency.maxConcurrent,
         action.fullyQualifiedName(true),
-        invokersToUse,
+        targetInvokers,
         schedulingState.containerMap,
         schedulingState.invokerSlots,
         schedulingState.invokerCores,
@@ -301,9 +305,9 @@ class LachesisScheduler(
           MetricEmitter.emitCounterMetric(metric)
         case _ =>
       }
-      (invoker.map(_._1), function, slots, cores)
+      (invoker.map(_._1), function, slots, cores, flag)
     } else {
-      (None, None, None, None)
+      (None, None, None, None, None)
     }
 
     // Create final action limits, action, and message for the invocation we want to run
@@ -350,10 +354,12 @@ class LachesisScheduler(
           s"scheduled activation ${finalMsg.activationId}, action '${finalMsg.action.asString}' ($actionType), ns '${finalMsg.user.namespace.name.asString}', mem limit ${memoryLimit.megabytes} MB (${memoryLimitInfo}), cpu limit ${cpuLimit.cores} cores (${cpuLimitInfo}), time limit ${timeLimit.duration.toMillis} ms (${timeLimitInfo}) to ${invoker}")        
 
         // Spin up and initialize a warm, right-size container in the background for the action beacuse we scheduled the invocation to a larger warm container
-        if (finalAction.limits.cpu.cores > action.limits.cpu.cores || finalAction.limits.memory.megabytes > action.limits.memory.megabytes) {        
-          schedulingState.addOrDecreaseContainerState(invoker.toInt, action.fullyQualifiedName(true))
-          val backgroundActivationResult = setupActivation(backgroundMsg, action, invoker, action.limits.cpu.cores)
-          sendActivationToInvoker(messageProducer, backgroundMsg, invoker).map(_ => backgroundActivationResult)
+        if (prewarmFlag == 1) {
+          if (finalAction.limits.cpu.cores > action.limits.cpu.cores || finalAction.limits.memory.megabytes > action.limits.memory.megabytes) {        
+            schedulingState.addOrDecreaseContainerState(invoker.toInt, action.fullyQualifiedName(true))
+            val backgroundActivationResult = setupActivation(backgroundMsg, action, invoker, action.limits.cpu.cores)
+            sendActivationToInvoker(messageProducer, backgroundMsg, invoker).map(_ => backgroundActivationResult)
+          }
         }
 
         // Update containerMap state
@@ -363,7 +369,7 @@ class LachesisScheduler(
       }
       .getOrElse {
         // report the state of all invokers
-        val invokerStates = invokersToUse.foldLeft(Map.empty[InvokerState, Int]) { (agg, curr) =>
+        val invokerStates = targetInvokers.foldLeft(Map.empty[InvokerState, Int]) { (agg, curr) =>
           val count = agg.getOrElse(curr.status, 0) + 1
           agg + (curr.status -> count)
         }
@@ -529,7 +535,8 @@ object LachesisScheduler extends LoadBalancerProvider {
     chosenIndex: Int = -1,
     chosenDifferenceCpu: Int = 100,
     chosenDifferenceMem: Int = 10000,
-    finalRule: Int = -1)(implicit logging: Logging, transId: TransactionId): (Option[(InvokerInstanceId, Boolean)], FullyQualifiedEntityName, Int, Int) = {
+    finalRule: Int = -1,
+    flag: Int = 1)(implicit logging: Logging, transId: TransactionId): (Option[(InvokerInstanceId, Boolean)], FullyQualifiedEntityName, Int, Int, Int) = {
     val numInvokers = invokers.size
 
     logging.error(this, s"Num invokers is: ${numInvokers}")
@@ -539,8 +546,11 @@ object LachesisScheduler extends LoadBalancerProvider {
 
     logging.info(this, s"fqn is: ${fqn}")
 
+    var prewarmFlag = flag
+
     if (numInvokers > 0) {
-      if (stepsDone == numInvokers || finalRule == 1) {
+      // (index == 0 && stepsDone > 0) is used to check if we wrapped around, i.e. checked all invokers of >= target frequency
+      if (stepsDone == numInvokers || finalRule == 1 || (index == 0 && stepsDone > 0)) {
         // Found an Invoker that fit into one of the three rules
         if (chosenIndex != -1) {
           // logging.warn(this, s"The chosen index was not empty, rather it was ${chosenIndex}")
@@ -548,7 +558,7 @@ object LachesisScheduler extends LoadBalancerProvider {
           val finalCores = chosenFqn.name.toString.split("_")(1).toInt
           val finalSlots = chosenFqn.name.toString.split("_")(2).toInt
           logging.warn(this, s"Lachesis launching: activation_id ${activationId} in rule ${finalRule} index ${chosenIndex} original name ${fqn.name} final name ${chosenFqn.name}")
-          (Some(invoker.id, false), chosenFqn, finalSlots, finalCores)
+          (Some(invoker.id, false), chosenFqn, finalSlots, finalCores, flag)
         // Case #6: None of the invokers have any warm containers or space for new containers, choosen one at random
         } else {
           logging.warn(this, s"Lachesis launching: activation_id ${activationId} in case 5 it was rejected")
@@ -560,9 +570,9 @@ object LachesisScheduler extends LoadBalancerProvider {
             dispatchedMem(random.toInt).forceAcquireConcurrent(fqn, maxConcurrent, slots)
             dispatchedCpu(random.toInt).forceAcquireConcurrent(fqn, maxConcurrent, cores)
             logging.warn(this, s"system is overloaded. Chose invoker${random.toInt} by random assignment.")
-            (Some(random, true), fqn, slots, cores)
+            (Some(random, true), fqn, slots, cores, flag)
           } else {
-            (None, fqn, slots, cores)
+            (None, fqn, slots, cores, flag)
           }
         }
       } else {
@@ -606,6 +616,9 @@ object LachesisScheduler extends LoadBalancerProvider {
                     bestDiffMem = 0
                     bestFqn = mapFqn
                     currentRule = 1
+                  }
+                  else {
+                    prewarmFlag = 0
                   }
                 }
 
@@ -659,10 +672,10 @@ object LachesisScheduler extends LoadBalancerProvider {
           }
         }
         val newIndex = (index + step) % numInvokers
-        schedule(maxConcurrent, fqn, invokers, containerMap, dispatchedMem, dispatchedCpu, slots, cores, newIndex, step, bestFqn, activationId, stepsDone + 1, bestIndex, bestDiffCpu, bestDiffMem, currentRule)
+        schedule(maxConcurrent, fqn, invokers, containerMap, dispatchedMem, dispatchedCpu, slots, cores, newIndex, step, bestFqn, activationId, stepsDone + 1, bestIndex, bestDiffCpu, bestDiffMem, currentRule, prewarmFlag)
       }  
     } else {
-      (None, fqn, slots, cores)
+      (None, fqn, slots, cores, flag)
     }
   }
 }
