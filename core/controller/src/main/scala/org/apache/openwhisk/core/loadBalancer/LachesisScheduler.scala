@@ -550,10 +550,14 @@ object LachesisScheduler extends LoadBalancerProvider {
     flag: Int = 1)(implicit logging: Logging, transId: TransactionId): (Option[(InvokerInstanceId, Boolean)], FullyQualifiedEntityName, Int, Int, Int) = {
     val numInvokers = invokers.size
 
+    logging.error(this, s"MODIFIED LACHESIS SCHEDULER")
+
     logging.error(this, s"Num invokers is: ${numInvokers}")
-    logging.error(this, s"Index, step is: ${index}, ${step}")
+    logging.error(this, s"Index: ${index}")
+    logging.error(this, s"Chosen Index is: ${chosenIndex}")
     logging.error(this, s"Steps done is: ${stepsDone}")
     logging.error(this, s"maxConcurrent is: ${maxConcurrent}")
+    logging.error(this, s"Step is: ${step}")
 
     logging.info(this, s"fqn is: ${fqn}")
 
@@ -600,6 +604,7 @@ object LachesisScheduler extends LoadBalancerProvider {
 
         // Containers exist on Invoker
         if (!invokerMap.isEmpty) {
+          logging.warn(this, s"Invoker map not empty for invoker at index: ${index}")
           // Search for best container on the Invoker
           for ((mapFqn, count) <- invokerMap) {
             // count = number of warm containers that are available
@@ -627,6 +632,7 @@ object LachesisScheduler extends LoadBalancerProvider {
                     bestDiffMem = 0
                     bestFqn = mapFqn
                     currentRule = 1
+                    logging.warn(this, s"Found best case: invoker ${index}")
                   }
                   else {
                     prewarmFlag = 0

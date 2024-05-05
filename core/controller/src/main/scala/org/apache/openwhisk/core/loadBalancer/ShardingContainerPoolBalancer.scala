@@ -416,6 +416,8 @@ object ShardingContainerPoolBalancer extends LoadBalancerProvider {
     stepsDone: Int = 0)(implicit logging: Logging, transId: TransactionId): Option[(InvokerInstanceId, Boolean)] = {
     val numInvokers = invokers.size
 
+    logging.warn(this, s"Running sharding container pool balancer.")    
+
     if (numInvokers > 0) {
       val invoker = invokers(index)
       //test this invoker - if this action supports concurrency, use the scheduleConcurrent function
